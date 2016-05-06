@@ -72,6 +72,11 @@ static const struct intelDevice deviceTable[] = {
 	{ .pciDevId = E1000_DEV_ID_PCH_I218_V2, .device = board_pch_lpt, .deviceName = "I218V2", .deviceInfo = &e1000_pch_lpt_info },
 	{ .pciDevId = E1000_DEV_ID_PCH_I218_LM3, .device = board_pch_lpt, .deviceName = "I218LM3", .deviceInfo = &e1000_pch_lpt_info },
 	{ .pciDevId = E1000_DEV_ID_PCH_I218_V3, .device = board_pch_lpt, .deviceName = "I218V3", .deviceInfo = &e1000_pch_lpt_info },
+    { .pciDevId = E1000_DEV_ID_PCH_SPT_I219_LM, .device = board_pch_spt, .deviceName = "I219LM", .deviceInfo = &e1000_pch_spt_info },
+    { .pciDevId = E1000_DEV_ID_PCH_SPT_I219_V, .device = board_pch_spt, .deviceName = "I219V", .deviceInfo = &e1000_pch_spt_info },
+    { .pciDevId = E1000_DEV_ID_PCH_SPT_I219_LM2, .device = board_pch_spt, .deviceName = "I219LM2", .deviceInfo = &e1000_pch_spt_info },
+    { .pciDevId = E1000_DEV_ID_PCH_SPT_I219_V2, .device = board_pch_spt, .deviceName = "I219V2", .deviceInfo = &e1000_pch_spt_info },
+    { .pciDevId = E1000_DEV_ID_PCH_LBG_I219_LM3, .device = board_pch_spt, .deviceName = "I219LM3", .deviceInfo = &e1000_pch_spt_info },
     
     /* end of table */
     { .pciDevId = 0, .device = 0, .deviceName = NULL, .deviceInfo = NULL }
@@ -139,7 +144,9 @@ bool IntelMausi::init(OSDictionary *properties)
         multicastMode = false;
         linkUp = false;
         
-#ifndef __PRIVATE_SPI__
+#ifdef __PRIVATE_SPI__
+        linkOpts = 0;
+#else
         stalled = false;
 #endif /* __PRIVATE_SPI__ */
         
@@ -399,7 +406,6 @@ void IntelMausi::systemWillShutdown(IOOptionBits specifier)
 
 IOReturn IntelMausi::enable(IONetworkInterface *netif)
 {
-    const IONetworkMedium *selectedMedium;
     IOReturn result = kIOReturnError;
     
     DebugLog("enable() ===>\n");
@@ -419,14 +425,6 @@ IOReturn IntelMausi::enable(IONetworkInterface *netif)
         IOLog("Ethernet [IntelMausi]: Error allocating DMA descriptors.\n");
         goto done;
     }
-    selectedMedium = getSelectedMedium();
-    
-    if (!selectedMedium) {
-        DebugLog("Ethernet [IntelMausi]: No medium selected. Falling back to autonegotiation.\n");
-        selectedMedium = mediumTable[MEDIUM_INDEX_AUTO];
-    }
-    selectMedium(selectedMedium);
-    setLinkStatus(kIONetworkLinkValid);
     intelEnable();
     
     /* In case we are using an msi the interrupt hasn't been enabled by start(). */
@@ -482,12 +480,6 @@ IOReturn IntelMausi::disable(IONetworkInterface *netif)
     interruptSource->disable();
     
     intelDisable();
-    
-    if (linkUp)
-        IOLog("Ethernet [IntelMausi]: Link down on en%u\n", netif->getUnitNumber());
-    
-    linkUp = false;
-    setLinkStatus(kIONetworkLinkValid);
     
     if (mcAddrList) {
         IOFree(mcAddrList, mcListCount * sizeof(IOEthernetAddress));
@@ -1284,106 +1276,12 @@ IOReturn IntelMausi::getHardwareAddress(IOEthernetAddress *addr)
 
 IOReturn IntelMausi::selectMedium(const IONetworkMedium *medium)
 {
-    struct e1000_hw *hw = &adapterData.hw;
-    struct e1000_mac_info *mac = &hw->mac;
     IOReturn result = kIOReturnSuccess;
     
     DebugLog("selectMedium() ===>\n");
 
-    if (adapterData.flags2 & FLAG2_HAS_EEE)
-        hw->dev_spec.ich8lan.eee_disable = true;
-    
     if (medium) {
-        switch (medium->getIndex()) {
-            case MEDIUM_INDEX_AUTO:
-                if (hw->phy.media_type == e1000_media_type_fiber) {
-                    hw->phy.autoneg_advertised = ADVERTISED_1000baseT_Full | ADVERTISED_FIBRE | ADVERTISED_Autoneg;
-                } else {
-                    hw->phy.autoneg_advertised = (ADVERTISED_10baseT_Half | ADVERTISED_10baseT_Full |
-                                                  ADVERTISED_100baseT_Full | ADVERTISED_100baseT_Half |
-                                                  ADVERTISED_1000baseT_Full | ADVERTISED_Autoneg |
-                                                  ADVERTISED_TP | ADVERTISED_MII);
-                    
-                    if (adapterData.fc_autoneg)
-                        hw->fc.requested_mode = e1000_fc_default;
-                    
-                    if (adapterData.flags2 & FLAG2_HAS_EEE)
-                        hw->dev_spec.ich8lan.eee_disable = false;
-                }
-                hw->mac.autoneg = 1;
-                break;
-                
-            case MEDIUM_INDEX_10HD:
-                mac->forced_speed_duplex = ADVERTISE_10_HALF;
-                hw->mac.autoneg = 0;
-                break;
-                
-            case MEDIUM_INDEX_10FD:
-                mac->forced_speed_duplex = ADVERTISE_10_FULL;
-                hw->mac.autoneg = 0;
-                break;
-                
-            case MEDIUM_INDEX_100HD:
-                hw->phy.autoneg_advertised = ADVERTISED_100baseT_Half;
-                hw->mac.autoneg = 1;
-                hw->fc.requested_mode = e1000_fc_none;
-                break;
-                
-            case MEDIUM_INDEX_100FD:
-                hw->phy.autoneg_advertised = ADVERTISED_100baseT_Full;
-                hw->mac.autoneg = 1;
-                hw->fc.requested_mode = e1000_fc_none;
-                break;
-                
-            case MEDIUM_INDEX_100FDFC:
-                hw->phy.autoneg_advertised = ADVERTISED_100baseT_Full;
-                hw->mac.autoneg = 1;
-                hw->fc.requested_mode = e1000_fc_full;
-                break;
-                
-            case MEDIUM_INDEX_1000FD:
-                hw->phy.autoneg_advertised = ADVERTISED_1000baseT_Full;
-                hw->mac.autoneg = 1;
-                hw->fc.requested_mode = e1000_fc_none;
-                break;
-                
-            case MEDIUM_INDEX_1000FDFC:
-                hw->phy.autoneg_advertised = ADVERTISED_1000baseT_Full;
-                hw->mac.autoneg = 1;
-                hw->fc.requested_mode = e1000_fc_full;
-                break;
-                
-            case MEDIUM_INDEX_1000FDEEE:
-                hw->phy.autoneg_advertised = ADVERTISED_1000baseT_Full;
-                hw->mac.autoneg = 1;
-                hw->fc.requested_mode = e1000_fc_none;
-                hw->dev_spec.ich8lan.eee_disable = false;
-                break;
-                
-            case MEDIUM_INDEX_1000FDFCEEE:
-                hw->phy.autoneg_advertised = ADVERTISED_1000baseT_Full;
-                hw->mac.autoneg = 1;
-                hw->fc.requested_mode = e1000_fc_full;
-                hw->dev_spec.ich8lan.eee_disable = false;
-                break;
-                
-            case MEDIUM_INDEX_100FDEEE:
-                hw->phy.autoneg_advertised = ADVERTISED_100baseT_Full;
-                hw->mac.autoneg = 1;
-                hw->fc.requested_mode = e1000_fc_none;
-                hw->dev_spec.ich8lan.eee_disable = false;
-                break;
-                
-            case MEDIUM_INDEX_100FDFCEEE:
-                hw->phy.autoneg_advertised = ADVERTISED_100baseT_Full;
-                hw->mac.autoneg = 1;
-                hw->fc.requested_mode = e1000_fc_full;
-                hw->dev_spec.ich8lan.eee_disable = false;
-                break;
-        }
-        /* clear MDI, MDI(-X) override is only allowed when autoneg enabled */
-        hw->phy.mdix = AUTO_ALL_MODES;
-        
+        intelSetupAdvForMedium(medium);
         setCurrentMedium(medium);
         
         timerSource->cancelTimeout();
@@ -1486,7 +1384,7 @@ void IntelMausi::rxInterrupt()
         
         /* If the packet was replaced we have to update the descriptor's buffer address. */
         if (replaced) {
-            if (rxMbufCursor->getPhysicalSegmentsWithCoalesce(bufPkt, &rxSegment, 1) != 1) {
+            if (rxMbufCursor->getPhysicalSegments(bufPkt, &rxSegment, 1) != 1) {
                 DebugLog("Ethernet [IntelMausi]: getPhysicalSegmentsWithCoalesce() failed.\n");
                 etherStats->dot3RxExtraEntry.resourceErrors++;
                 freePacket(bufPkt);
@@ -1595,8 +1493,8 @@ void IntelMausi::interruptOccurred(OSObject *client, IOInterruptEventSource *src
 #endif /* DISABLED_CODE */
 
 	/* Reset on uncorrectable ECC error */
-	if ((icr & E1000_ICR_ECCER) && (hw->mac.type == e1000_pch_lpt)) {
-		UInt32 pbeccsts = intelReadMem32(E1000_PBECCSTS);
+    if ((icr & E1000_ICR_ECCER) && ((hw->mac.type == e1000_pch_lpt) || (hw->mac.type == e1000_pch_spt))) {
+        UInt32 pbeccsts = intelReadMem32(E1000_PBECCSTS);
 
         etherStats->dot3StatsEntry.internalMacReceiveErrors += (pbeccsts & E1000_PBECCSTS_UNCORR_ERR_CNT_MASK) >>E1000_PBECCSTS_UNCORR_ERR_CNT_SHIFT;
         etherStats->dot3TxExtraEntry.resets++;
@@ -1756,12 +1654,16 @@ void IntelMausi::setLinkUp()
         }
     }
     linkUp = true;
-    setLinkStatus(kIONetworkLinkValid | kIONetworkLinkActive, mediumTable[mediumIndex], mediumSpeed, NULL);
     
 #ifdef __PRIVATE_SPI__
+    setLinkStatus((kIONetworkLinkValid | kIONetworkLinkActive | linkOpts), mediumTable[mediumIndex], mediumSpeed, NULL);
+    linkOpts = 0;
+
     /* Start output thread, statistics update and watchdog. */
     netif->startOutputThread();
 #else
+    setLinkStatus(kIONetworkLinkValid | kIONetworkLinkActive, mediumTable[mediumIndex], mediumSpeed, NULL);
+
     /* Restart txQueue, statistics update and watchdog. */
     txQueue->start();
     
@@ -1911,9 +1813,13 @@ bool IntelMausi::intelStart()
     
     if (adapterData.flags2 & FLAG2_HAS_EEE)
         hw->dev_spec.ich8lan.eee_disable = false;
-    
+
+#ifdef __PRIVATE_SPI__
+    linkOpts = 0;
+#endif /* __PRIVATE_SPI__ */
+
     initPCIPowerManagment(pciDevice, ei);
-        
+    
 	/* Explicitly disable IRQ since the NIC can be in any state. */
 	intelDisableIRQ();
     
@@ -1935,7 +1841,8 @@ bool IntelMausi::intelStart()
 		goto done;
     }
 	if ((adapterData.flags & FLAG_IS_ICH) &&
-	    (adapterData.flags & FLAG_READ_ONLY_NVM))
+	    (adapterData.flags & FLAG_READ_ONLY_NVM) &&
+        (hw->mac.type < e1000_pch_spt))
 		e1000e_write_protect_nvm_ich8lan(hw);
     
 	hw->phy.autoneg_wait_to_complete = 0;
@@ -2187,7 +2094,7 @@ bool IntelMausi::checkForDeadlock()
         eeeMode = 0;
     }
     
-    if (((txDescDoneCount == txDescDoneLast) && (txNumFreeDesc < kNumTxDesc)) || (adapterData.phy_hang_count > 1)) {
+    if ((txDescDoneCount == txDescDoneLast) && (txNumFreeDesc < kNumTxDesc)) {
         if (++deadlockWarn >= kTxDeadlockTreshhold) {
             mbuf_t m = txBufArray[txDirtyIndex].mbuf;
             UInt32 pktSize;
@@ -2248,8 +2155,6 @@ bool IntelMausi::checkForDeadlock()
 
 #pragma mark --- miscellaneous functions ---
 
-#if 1
-
 static inline void prepareTSO4(mbuf_t m, UInt32 *mssHeaderSize, UInt32 *payloadSize)
 {
     struct iphdr *ipHdr = (struct iphdr *)((UInt8 *)mbuf_data(m) + ETHER_HDR_LEN);
@@ -2260,7 +2165,7 @@ static inline void prepareTSO4(mbuf_t m, UInt32 *mssHeaderSize, UInt32 *payloadS
     UInt32 hlen = (tcpHdr->th_off << 2) + kMinL4HdrOffsetV4;
     
     ipHdr->tot_len = 0;
-    
+
     csum32 += ntohs(*addr++);
     csum32 += ntohs(*addr++);
     csum32 += ntohs(*addr++);
@@ -2268,6 +2173,10 @@ static inline void prepareTSO4(mbuf_t m, UInt32 *mssHeaderSize, UInt32 *payloadS
     csum32 += (csum32 >> 16);
     tcpHdr->th_sum = htons((UInt16)csum32);
     
+    /* Flush the cache lines in order to enforce writeback. */
+    asm volatile ("clflush %0" : "=m" (ipHdr->tot_len));
+    asm volatile ("clflush %0" : "=m" (tcpHdr->th_sum));
+
     *mssHeaderSize = ((*mssHeaderSize << 16) | (hlen << 8));
     *payloadSize = plen - hlen;
 }
@@ -2283,55 +2192,19 @@ static inline void prepareTSO6(mbuf_t m, UInt32 *mssHeaderSize, UInt32 *payloadS
     UInt32 i;
     
     ip6Hdr->ip6_ctlun.ip6_un1.ip6_un1_plen = 0;
-    
+
     for (i = 0; i < 16; i++)
         csum32 += ntohs(*addr++);
     
     csum32 += (csum32 >> 16);
     tcpHdr->th_sum = htons((UInt16)csum32);
     
-    //DebugLog("Ethernet [IntelMausi]: csum=0x%llx\n", csum64);
+    /* Flush the cache lines in order to enforce writeback. */
+    asm volatile ("clflush %0" : "=m" (ip6Hdr->ip6_ctlun.ip6_un1.ip6_un1_plen));
+    asm volatile ("clflush %0" : "=m" (tcpHdr->th_sum));
     
     *mssHeaderSize = ((*mssHeaderSize << 16) | (hlen << 8));
     *payloadSize = plen - hlen;
 }
 
-#else
-
-static inline void prepareTSO4(mbuf_t m, UInt32 *mssHeaderSize, UInt32 *payloadSize)
-{
-    struct iphdr *ipHdr = (struct iphdr *)((UInt8 *)mbuf_data(m) + ETHER_HDR_LEN);
-    struct tcphdr *tcpHdr = (struct tcphdr *)((UInt8 *)ipHdr + sizeof(struct iphdr));
-    UInt32 plen = ntohs(ipHdr->tot_len) - sizeof(struct iphdr);
-    UInt32 csum = ntohs(tcpHdr->th_sum) - plen;
-    UInt32 hlen = tcpHdr->th_off << 2;
-    
-    //DebugLog("Ethernet [IntelMausi]: hlen=%u, mss=%u\n", hlen, *mssHeaderSize);
-    
-    csum += (csum >> 16);
-    tcpHdr->th_sum = htons((UInt16)csum);
-    
-    *mssHeaderSize = ((*mssHeaderSize << 16) | ((hlen + kMinL4HdrOffsetV4) << 8));
-    *payloadSize = plen - hlen;
-}
-
-static inline void prepareTSO6(mbuf_t m, UInt32 *mssHeaderSize, UInt32 *payloadSize)
-{
-    struct ip6_hdr *ip6Hdr = (struct ip6_hdr *)((UInt8 *)mbuf_data(m) + ETHER_HDR_LEN);
-    struct tcphdr *tcpHdr = (struct tcphdr *)((UInt8 *)ip6Hdr + sizeof(struct ip6_hdr));
-    UInt32 plen = ntohs(ip6Hdr->ip6_ctlun.ip6_un1.ip6_un1_plen);
-    UInt32 csum = ntohs(tcpHdr->th_sum) - plen;
-    UInt32 hlen = tcpHdr->th_off << 2;
-    
-    csum += (csum >> 16);
-    ip6Hdr->ip6_ctlun.ip6_un1.ip6_un1_plen = 0;
-    tcpHdr->th_sum = htons((UInt16)csum);
-    
-    //DebugLog("Ethernet [IntelMausi]: csum=0x%04x\n", (UInt16)(csum & 0xffff));
-
-    *mssHeaderSize = ((*mssHeaderSize << 16) | ((hlen + kMinL4HdrOffsetV6) << 8));
-    *payloadSize = plen - hlen;
-}
-
-#endif
 
